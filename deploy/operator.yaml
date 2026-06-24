@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-frr-k8s
+  labels:
+    app.kubernetes.io/name: managed-bgp-peer-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: managed-bgp-peer-operator
+  namespace: openshift-frr-k8s
+  annotations:
+    azure.workload.identity/client-id: REPLACE_WITH_BGP_PEER_MANAGER_CLIENT_ID
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: managed-bgp-peer-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: managed-bgp-peer-manager-role
+subjects:
+- kind: ServiceAccount
+  name: managed-bgp-peer-operator
+  namespace: openshift-frr-k8s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: managed-bgp-peer-manager-role
+rules:
+- apiGroups:
+  - bgp.network.redhat.com
+  resources:
+  - managedbgppeers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bgp.network.redhat.com
+  resources:
+  - managedbgppeers/finalizers
+  - managedbgppeers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - machine.openshift.io
+  resources:
+  - machines
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: managed-bgp-peer-operator
+  namespace: openshift-frr-k8s
+  labels:
+    app.kubernetes.io/name: managed-bgp-peer-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: managed-bgp-peer-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: managed-bgp-peer-operator
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: managed-bgp-peer-operator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: manager
+        image: REPLACE_WITH_OPERATOR_IMAGE
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=0
+        - --metrics-secure=false
+        ports:
+        - name: health
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      terminationGracePeriodSeconds: 10

@@ -1,0 +1,50 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - bgp.network.redhat.com
+  resources:
+  - managedbgppeers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - bgp.network.redhat.com
+  resources:
+  - managedbgppeers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - bgp.network.redhat.com
+  resources:
+  - managedbgppeers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - machine.openshift.io
+  resources:
+  - machines
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch

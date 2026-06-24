@@ -1,0 +1,2 @@
+resources:
+- bases/bgp.network.redhat.com_managedbgppeers.yaml

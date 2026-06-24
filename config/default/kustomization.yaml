@@ -1,0 +1,7 @@
+namespace: managed-bgp-peer-system
+namePrefix: managed-bgp-peer-
+
+resources:
+- ../crd
+- ../rbac
+- ../manager

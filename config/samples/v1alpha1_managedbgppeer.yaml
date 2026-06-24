@@ -1,0 +1,18 @@
+apiVersion: bgp.network.redhat.com/v1alpha1
+kind: ManagedBGPPeer
+metadata:
+  name: azure-route-server
+spec:
+  suspended: false
+  nodeSelector:
+    matchLabels:
+      bgp_router: "true"
+  peerASN: 65001
+  backend:
+    type: AzureRouteServer
+    azureRouteServer:
+      subscriptionID: REPLACE_WITH_SUBSCRIPTION_ID
+      resourceGroup: REPLACE_WITH_RESOURCE_GROUP
+      routeServerName: REPLACE_WITH_ROUTE_SERVER_NAME
+  reconcileIntervalSeconds: 60
+  machineNamespace: openshift-machine-api
