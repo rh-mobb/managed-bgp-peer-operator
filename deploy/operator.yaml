@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: openshift-frr-k8s
+  name: managed-bgp-peer-operator
   labels:
     app.kubernetes.io/name: managed-bgp-peer-operator
 ---
@@ -9,9 +9,9 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: managed-bgp-peer-operator
-  namespace: openshift-frr-k8s
+  namespace: managed-bgp-peer-operator
   annotations:
-    azure.workload.identity/client-id: REPLACE_WITH_BGP_PEER_MANAGER_CLIENT_ID
+    azure.workload.identity/client-id: 3e6f6250-5917-43ba-a39b-9cf2ff0cab84
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -24,7 +24,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: managed-bgp-peer-operator
-  namespace: openshift-frr-k8s
+  namespace: managed-bgp-peer-operator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -70,12 +70,24 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: managed-bgp-peer-operator
-  namespace: openshift-frr-k8s
+  namespace: managed-bgp-peer-operator
   labels:
     app.kubernetes.io/name: managed-bgp-peer-operator
 spec:
@@ -96,7 +108,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: REPLACE_WITH_OPERATOR_IMAGE
+        image: quay.io/rh_ee_thhubbar/managed-bgp-peer-operator:latest
         imagePullPolicy: Always
         command:
         - /manager

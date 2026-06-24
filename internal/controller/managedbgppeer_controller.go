@@ -58,6 +58,7 @@ type ManagedBGPPeerReconciler struct {
 // +kubebuilder:rbac:groups=bgp.network.redhat.com,resources=managedbgppeers/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=machine.openshift.io,resources=machines,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ManagedBGPPeerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)

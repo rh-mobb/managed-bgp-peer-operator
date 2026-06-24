@@ -12,7 +12,7 @@ RUN mkdir -p /workspace/.cache/go-build /workspace/.cache/go-tmp /workspace/.cac
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
-RUN CGO_ENABLED=0 GOOS=linux go build -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o manager cmd/main.go
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5
 RUN microdnf install -y ca-certificates && microdnf clean all
