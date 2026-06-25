@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -80,38 +81,19 @@ func (r *ManagedBGPPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, &peer); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	cfg, err := specToReconcilerConfig(&peer)
 	if err != nil {
-		return r.setDegraded(ctx, &peer, "InvalidSpec", err)
+		return r.setDegraded(ctx, req.NamespacedName, "InvalidSpec", err)
 	}
 
 	if peer.Spec.Suspended {
-		return r.handleSuspended(ctx, &peer, cfg)
+		return r.handleSuspended(ctx, req.NamespacedName, cfg)
 	}
 
-	if meta.IsStatusConditionTrue(peer.Status.Conditions, api.ConditionTypeSuspended) {
-		meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-			Type:               api.ConditionTypeSuspended,
-			Status:             metav1.ConditionFalse,
-			Reason:             "Resumed",
-			Message:            "Reconciliation resumed",
-			ObservedGeneration: peer.Generation,
-		})
-	}
-
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeProgressing,
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciling",
-		Message:            "Reconciliation in progress",
-		ObservedGeneration: peer.Generation,
-	})
-	peer.Status.ObservedGeneration = peer.Generation
-	if err := r.Status().Update(ctx, &peer); err != nil {
-		return ctrl.Result{}, err
-	}
+	resumeFromSuspend := meta.IsStatusConditionTrue(peer.Status.Conditions, api.ConditionTypeSuspended)
 
 	rec := &reconciler.Reconciler{
 		Cfg:        cfg,
@@ -120,7 +102,7 @@ func (r *ManagedBGPPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	res, err := rec.Reconcile(ctx)
 	if err != nil {
-		return r.setDegraded(ctx, &peer, "ReconcileFailed", err)
+		return r.setDegraded(ctx, req.NamespacedName, "ReconcileFailed", err)
 	}
 
 	log.Info("managed BGP peer reconcile completed",
@@ -129,37 +111,52 @@ func (r *ManagedBGPPeerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	)
 
 	now := metav1.Now()
-	peer.Status.ObservedGeneration = peer.Generation
-	peer.Status.PeerCount = len(res.Peers)
-	peer.Status.LastReconcileTime = &now
-	peer.Status.Peers = nil
-	for _, pr := range res.Peers {
-		peer.Status.Peers = append(peer.Status.Peers, api.ManagedPeerStatus{
-			NodeName:          pr.NodeName,
-			PeerIP:            pr.PeerIP,
-			PeerName:          pr.PeerName,
-			ProvisioningState: pr.ProvisioningState,
-			PeerBGPState:      pr.PeerBGPState,
+	statusPatch := func(latest *api.ManagedBGPPeer) {
+		if resumeFromSuspend {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               api.ConditionTypeSuspended,
+				Status:             metav1.ConditionFalse,
+				Reason:             "Resumed",
+				Message:            "Reconciliation resumed",
+				ObservedGeneration: latest.Generation,
+			})
+		}
+
+		latest.Status.ObservedGeneration = latest.Generation
+		latest.Status.PeerCount = len(res.Peers)
+		latest.Status.LastReconcileTime = &now
+		latest.Status.Peers = nil
+		for _, pr := range res.Peers {
+			latest.Status.Peers = append(latest.Status.Peers, api.ManagedPeerStatus{
+				NodeName:          pr.NodeName,
+				PeerIP:            pr.PeerIP,
+				PeerName:          pr.PeerName,
+				ProvisioningState: pr.ProvisioningState,
+				PeerBGPState:      pr.PeerBGPState,
+			})
+		}
+
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ReconcileSucceeded",
+			Message:            fmt.Sprintf("Reconciled %d BGP peers", len(res.Peers)),
+			ObservedGeneration: latest.Generation,
 		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeProgressing,
+			Status:             metav1.ConditionFalse,
+			Reason:             "ReconcileComplete",
+			Message:            "Reconciliation finished",
+			ObservedGeneration: latest.Generation,
+		})
+		meta.RemoveStatusCondition(&latest.Status.Conditions, api.ConditionTypeDegraded)
 	}
 
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "ReconcileSucceeded",
-		Message:            fmt.Sprintf("Reconciled %d BGP peers", len(res.Peers)),
-		ObservedGeneration: peer.Generation,
-	})
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeProgressing,
-		Status:             metav1.ConditionFalse,
-		Reason:             "ReconcileComplete",
-		Message:            "Reconciliation finished",
-		ObservedGeneration: peer.Generation,
-	})
-	meta.RemoveStatusCondition(&peer.Status.Conditions, api.ConditionTypeDegraded)
-
-	if err := r.Status().Update(ctx, &peer); err != nil {
+	if err := r.patchStatus(ctx, req.NamespacedName, statusPatch); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -196,8 +193,13 @@ func (r *ManagedBGPPeerReconciler) handleDeletion(ctx context.Context, peer *api
 	return ctrl.Result{}, nil
 }
 
-func (r *ManagedBGPPeerReconciler) handleSuspended(ctx context.Context, peer *api.ManagedBGPPeer, cfg *reconciler.ReconcilerConfig) (ctrl.Result, error) {
+func (r *ManagedBGPPeerReconciler) handleSuspended(ctx context.Context, key client.ObjectKey, cfg *reconciler.ReconcilerConfig) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	var peer api.ManagedBGPPeer
+	if err := r.Get(ctx, key, &peer); err != nil {
+		return ctrl.Result{}, err
+	}
 	if meta.IsStatusConditionTrue(peer.Status.Conditions, api.ConditionTypeSuspended) {
 		return ctrl.Result{}, nil
 	}
@@ -209,81 +211,105 @@ func (r *ManagedBGPPeerReconciler) handleSuspended(ctx context.Context, peer *ap
 		NewBackend: r.NewBackend,
 	}
 	if err := rec.Cleanup(ctx); err != nil {
-		return r.setDegraded(ctx, peer, "SuspendCleanupFailed", err)
+		return r.setDegraded(ctx, key, "SuspendCleanupFailed", err)
 	}
 
-	peer.Status.ObservedGeneration = peer.Generation
-	peer.Status.PeerCount = 0
-	peer.Status.Peers = nil
+	statusPatch := func(latest *api.ManagedBGPPeer) {
+		latest.Status.ObservedGeneration = latest.Generation
+		latest.Status.PeerCount = 0
+		latest.Status.Peers = nil
 
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeSuspended,
-		Status:             metav1.ConditionTrue,
-		Reason:             "Suspended",
-		Message:            "External BGP peering is suspended; cleanup completed",
-		ObservedGeneration: peer.Generation,
-	})
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Suspended",
-		Message:            "External BGP peering is suspended",
-		ObservedGeneration: peer.Generation,
-	})
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeProgressing,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Suspended",
-		Message:            "Reconciliation paused",
-		ObservedGeneration: peer.Generation,
-	})
-	meta.RemoveStatusCondition(&peer.Status.Conditions, api.ConditionTypeDegraded)
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeSuspended,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Suspended",
+			Message:            "External BGP peering is suspended; cleanup completed",
+			ObservedGeneration: latest.Generation,
+		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "Suspended",
+			Message:            "External BGP peering is suspended",
+			ObservedGeneration: latest.Generation,
+		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeProgressing,
+			Status:             metav1.ConditionFalse,
+			Reason:             "Suspended",
+			Message:            "Reconciliation paused",
+			ObservedGeneration: latest.Generation,
+		})
+		meta.RemoveStatusCondition(&latest.Status.Conditions, api.ConditionTypeDegraded)
+	}
 
-	if err := r.Status().Update(ctx, peer); err != nil {
+	if err := r.patchStatus(ctx, key, statusPatch); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
-	r.Recorder.Event(peer, corev1.EventTypeNormal, "Suspended", "External BGP peering suspended and cleanup completed")
+	r.Recorder.Event(&peer, corev1.EventTypeNormal, "Suspended", "External BGP peering suspended and cleanup completed")
 	return ctrl.Result{}, nil
 }
 
-func (r *ManagedBGPPeerReconciler) setDegraded(ctx context.Context, peer *api.ManagedBGPPeer, reason string, err error) (ctrl.Result, error) {
+func (r *ManagedBGPPeerReconciler) setDegraded(ctx context.Context, key client.ObjectKey, reason string, reconcileErr error) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Error(err, "reconciliation degraded", "reason", reason)
+	log.Error(reconcileErr, "reconciliation degraded", "reason", reason)
 
-	peer.Status.ObservedGeneration = peer.Generation
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeDegraded,
-		Status:             metav1.ConditionTrue,
-		Reason:             reason,
-		Message:            err.Error(),
-		ObservedGeneration: peer.Generation,
-	})
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            err.Error(),
-		ObservedGeneration: peer.Generation,
-	})
-	meta.SetStatusCondition(&peer.Status.Conditions, metav1.Condition{
-		Type:               api.ConditionTypeProgressing,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            "Reconciliation failed",
-		ObservedGeneration: peer.Generation,
-	})
-
-	if statusErr := r.Status().Update(ctx, peer); statusErr != nil {
-		log.Error(statusErr, "failed to update degraded status")
+	statusPatch := func(latest *api.ManagedBGPPeer) {
+		latest.Status.ObservedGeneration = latest.Generation
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             reason,
+			Message:            reconcileErr.Error(),
+			ObservedGeneration: latest.Generation,
+		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            reconcileErr.Error(),
+			ObservedGeneration: latest.Generation,
+		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               api.ConditionTypeProgressing,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            "Reconciliation failed",
+			ObservedGeneration: latest.Generation,
+		})
 	}
 
-	cfg, cfgErr := specToReconcilerConfig(peer)
+	if statusErr := r.patchStatus(ctx, key, statusPatch); statusErr != nil {
+		log.Error(statusErr, "failed to update degraded status")
+		if apierrors.IsConflict(statusErr) {
+			return ctrl.Result{Requeue: true}, reconcileErr
+		}
+	}
+
+	var peer api.ManagedBGPPeer
+	if err := r.Get(ctx, key, &peer); err != nil {
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, reconcileErr
+	}
+	cfg, cfgErr := specToReconcilerConfig(&peer)
 	requeue := 60 * time.Second
 	if cfgErr == nil {
 		requeue = cfg.ReconcileInterval
 	}
-	return ctrl.Result{RequeueAfter: requeue}, err
+	return ctrl.Result{RequeueAfter: requeue}, reconcileErr
+}
+
+// patchStatus re-fetches the latest object before applying a status mutation to avoid conflicts.
+func (r *ManagedBGPPeerReconciler) patchStatus(ctx context.Context, key client.ObjectKey, apply func(*api.ManagedBGPPeer)) error {
+	var latest api.ManagedBGPPeer
+	if err := r.Get(ctx, key, &latest); err != nil {
+		return err
+	}
+	apply(&latest)
+	return r.Status().Update(ctx, &latest)
 }
 
 func specToReconcilerConfig(peer *api.ManagedBGPPeer) (*reconciler.ReconcilerConfig, error) {
@@ -335,7 +361,7 @@ func (r *ManagedBGPPeerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&api.ManagedBGPPeer{}).
+		For(&api.ManagedBGPPeer{}, builder.WithPredicates(managedBGPPeerPredicate())).
 		Watches(&corev1.Node{}, r.nodeEnqueueHandler(), builder.WithPredicates(nodeEventFilter{})).
 		Watches(machineObj, r.nodeEnqueueHandler(), builder.WithPredicates(machineEventFilter{})).
 		Named("managedbgppeer").
@@ -423,4 +449,35 @@ func (machineEventFilter) Update(e event.UpdateEvent) bool {
 	oldHooks, _, _ := unstructured.NestedFieldNoCopy(oldU.Object, "spec", "lifecycleHooks")
 	newHooks, _, _ := unstructured.NestedFieldNoCopy(newU.Object, "spec", "lifecycleHooks")
 	return !reflect.DeepEqual(oldHooks, newHooks)
+}
+
+func managedBGPPeerPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool { return true },
+		DeleteFunc: func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldObj, okOld := e.ObjectOld.(metav1.Object)
+			newObj, okNew := e.ObjectNew.(metav1.Object)
+			if !okOld || !okNew {
+				return true
+			}
+			if oldObj.GetGeneration() != newObj.GetGeneration() {
+				return true
+			}
+			return deletionTimestampChanged(oldObj, newObj)
+		},
+	}
+}
+
+func deletionTimestampChanged(oldObj, newObj metav1.Object) bool {
+	oldDel := oldObj.GetDeletionTimestamp()
+	newDel := newObj.GetDeletionTimestamp()
+	if oldDel == nil && newDel == nil {
+		return false
+	}
+	if oldDel == nil || newDel == nil {
+		return true
+	}
+	return !oldDel.Equal(newDel)
 }

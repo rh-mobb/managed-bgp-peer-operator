@@ -11,7 +11,7 @@ metadata:
   name: managed-bgp-peer-operator
   namespace: managed-bgp-peer-operator
   annotations:
-    azure.workload.identity/client-id: 3e6f6250-5917-43ba-a39b-9cf2ff0cab84
+    azure.workload.identity/client-id: 243b4fe8-bad2-4b69-99f8-0b5929e4dd79
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -60,6 +60,13 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 - apiGroups:
   - machine.openshift.io
   resources:

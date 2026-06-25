@@ -8,6 +8,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v6"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	api "github.com/rh-mobb/managed-bgp-peer-operator/api/v1alpha1"
 	"github.com/rh-mobb/managed-bgp-peer-operator/internal/backend"
@@ -91,6 +92,8 @@ func (b *RouteServerBackend) ListPeers(ctx context.Context) ([]backend.ObservedP
 
 // ReconcilePeers creates, updates, or deletes peerings to match desired.
 func (b *RouteServerBackend) ReconcilePeers(ctx context.Context, desired []backend.Peer) (bool, error) {
+	log := logf.FromContext(ctx)
+
 	current, err := b.ListPeers(ctx)
 	if err != nil {
 		return false, err
@@ -102,6 +105,13 @@ func (b *RouteServerBackend) ReconcilePeers(ctx context.Context, desired []backe
 	if buildPeerSet(current).Equal(buildDesiredSet(desiredSorted)) {
 		return false, nil
 	}
+
+	log.Info("reconciling Azure Route Server BGP peerings",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"currentPeerCount", len(current),
+		"desiredPeerCount", len(desiredSorted),
+	)
 
 	desiredByName := make(map[string]backend.Peer, len(desiredSorted))
 	for _, p := range desiredSorted {
@@ -134,10 +144,20 @@ func (b *RouteServerBackend) ReconcilePeers(ctx context.Context, desired []backe
 
 // DeleteAllPeers removes all BGP connections on the Route Server.
 func (b *RouteServerBackend) DeleteAllPeers(ctx context.Context) error {
+	log := logf.FromContext(ctx)
+
 	current, err := b.ListPeers(ctx)
 	if err != nil {
 		return err
 	}
+	if len(current) == 0 {
+		return nil
+	}
+	log.Info("deleting all Azure Route Server BGP peerings",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"peerCount", len(current),
+	)
 	for _, p := range current {
 		if err := b.delete(ctx, p.Name); err != nil {
 			return err
@@ -147,6 +167,14 @@ func (b *RouteServerBackend) DeleteAllPeers(ctx context.Context) error {
 }
 
 func (b *RouteServerBackend) createOrUpdate(ctx context.Context, peer backend.Peer) error {
+	log := logf.FromContext(ctx)
+	log.Info("calling Azure API to create or update Route Server BGP peering",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"peeringName", peer.Name,
+		"peerIP", peer.PeerIP,
+		"peerASN", peer.PeerASN,
+	)
 	params := armnetwork.BgpConnection{
 		Properties: &armnetwork.BgpConnectionProperties{
 			PeerAsn: to.Ptr(peer.PeerASN),
@@ -160,10 +188,23 @@ func (b *RouteServerBackend) createOrUpdate(ctx context.Context, peer backend.Pe
 	if _, err := poller.PollUntilDone(ctx, nil); err != nil {
 		return fmt.Errorf("wait for peering %q: %w", peer.Name, err)
 	}
+	log.Info("Azure Route Server BGP peering create or update completed",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"peeringName", peer.Name,
+		"peerIP", peer.PeerIP,
+		"peerASN", peer.PeerASN,
+	)
 	return nil
 }
 
 func (b *RouteServerBackend) delete(ctx context.Context, name string) error {
+	log := logf.FromContext(ctx)
+	log.Info("calling Azure API to delete Route Server BGP peering",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"peeringName", name,
+	)
 	poller, err := b.MutateClient.BeginDelete(ctx, b.ResourceGroup, b.RouteServerName, name, nil)
 	if err != nil {
 		return fmt.Errorf("delete peering %q: %w", name, err)
@@ -171,6 +212,11 @@ func (b *RouteServerBackend) delete(ctx context.Context, name string) error {
 	if _, err := poller.PollUntilDone(ctx, nil); err != nil {
 		return fmt.Errorf("wait for delete peering %q: %w", name, err)
 	}
+	log.Info("Azure Route Server BGP peering delete completed",
+		"resourceGroup", b.ResourceGroup,
+		"routeServer", b.RouteServerName,
+		"peeringName", name,
+	)
 	return nil
 }
 
