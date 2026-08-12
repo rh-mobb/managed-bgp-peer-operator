@@ -11,7 +11,7 @@ metadata:
   name: managed-bgp-peer-operator
   namespace: managed-bgp-peer-operator
   annotations:
-    azure.workload.identity/client-id: 243b4fe8-bad2-4b69-99f8-0b5929e4dd79
+    azure.workload.identity/client-id: fa8447b3-b433-4a01-98a0-87bc04a1fad0
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -115,7 +115,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: quay.io/rh_ee_thhubbar/managed-bgp-peer-operator:latest
+        image: ghcr.io/rh-mobb/managed-bgp-peer-operator:latest
         imagePullPolicy: Always
         command:
         - /manager
