@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/go-toolset:1.25 AS builder
+FROM registry.access.redhat.com/ubi10/go-toolset:1.26 AS builder
 USER 0
 WORKDIR /workspace
 
@@ -14,7 +14,7 @@ COPY api/ api/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o manager cmd/main.go
 
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5
+FROM registry.access.redhat.com/ubi10-minimal:10.2
 RUN microdnf install -y ca-certificates && microdnf clean all
 WORKDIR /
 COPY --from=builder /workspace/manager .
